@@ -19,3 +19,11 @@ Buttons=6
 DeviceName=Marvo Scorpion G961
 LedType=RGB
 SensorType=PMW3327
+
+# Configuration size: 123 bytes.
+[Driver/sinowealth/devices/X182]
+Buttons=8
+DeviceName=Pichau P301
+LedType=RGB
+Profiles=2
+SensorType=A3050

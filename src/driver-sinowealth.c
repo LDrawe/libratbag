@@ -162,6 +162,7 @@ _Static_assert(sizeof(struct sinowealth_color) == 3, "Invalid size");
 
 /* Sensor IDs used in SinoWealth firmware and software. */
 enum sinowealth_sensor {
+	SINOWEALTH_SENSOR_A3050 = 0x02,
 	SINOWEALTH_SENSOR_PMW3360 = 0x06,
 	SINOWEALTH_SENSOR_PMW3212 = 0x08,
 	SINOWEALTH_SENSOR_PMW3327 = 0x0e,
@@ -689,11 +690,17 @@ sinowealth_raw_to_report_rate(uint8_t raw)
 	return 0;
 }
 
+/* Discrete DPI table for Avago/PixArt A3050 (`raw = 0x01..0x0b`). */
+static const unsigned int SINOWEALTH_A3050_DPIS[] = {
+	500, 750, 1000, 1250, 1500, 1750, 2000, 2500, 3000, 3500, 4000,
+};
+
 /* @return Maximum DPI for sensor `sensor` or 0 on error. */
 static unsigned int
 sinowealth_get_max_dpi_for_sensor(enum sinowealth_sensor sensor)
 {
 	switch (sensor) {
+	case SINOWEALTH_SENSOR_A3050: return 4000;
 	case SINOWEALTH_SENSOR_PMW3327: return 10200;
 	case SINOWEALTH_SENSOR_PMW3212: return 7200;
 	case SINOWEALTH_SENSOR_PMW3360: return 12000;
@@ -711,6 +718,14 @@ sinowealth_raw_to_dpi(struct ratbag_device *device, unsigned int raw)
 {
 	struct sinowealth_data *drv_data = device->drv_data;
 	enum sinowealth_sensor sensor = drv_data->configs[0].sensor_type;
+
+	if (sensor == SINOWEALTH_SENSOR_A3050) {
+		if (raw == 0)
+			return SINOWEALTH_A3050_DPIS[0];
+		if (raw > ARRAY_LENGTH(SINOWEALTH_A3050_DPIS))
+			return SINOWEALTH_A3050_DPIS[ARRAY_LENGTH(SINOWEALTH_A3050_DPIS) - 1];
+		return SINOWEALTH_A3050_DPIS[raw - 1];
+	}
 
 	if (sensor == SINOWEALTH_SENSOR_PMW3327 || sensor == SINOWEALTH_SENSOR_PMW3360)
 		raw += 1;
@@ -731,6 +746,22 @@ sinowealth_dpi_to_raw(struct ratbag_device *device, unsigned int dpi)
 	enum sinowealth_sensor sensor = drv_data->configs[0].sensor_type;
 
 	assert(dpi >= SINOWEALTH_DPI_MIN && dpi <= sinowealth_get_max_dpi_for_sensor(sensor));
+
+	if (sensor == SINOWEALTH_SENSOR_A3050) {
+		size_t best = 0;
+		unsigned int best_diff = SINOWEALTH_A3050_DPIS[0] > dpi
+			? SINOWEALTH_A3050_DPIS[0] - dpi
+			: dpi - SINOWEALTH_A3050_DPIS[0];
+		for (size_t i = 1; i < ARRAY_LENGTH(SINOWEALTH_A3050_DPIS); i++) {
+			const unsigned int d = SINOWEALTH_A3050_DPIS[i];
+			const unsigned int diff = d > dpi ? d - dpi : dpi - d;
+			if (diff < best_diff) {
+				best_diff = diff;
+				best = i;
+			}
+		}
+		return (uint8_t)(best + 1);
+	}
 
 	uint8_t raw = (uint8_t)(dpi / 100);
 
@@ -1808,8 +1839,11 @@ sinowealth_init_profile(struct ratbag_device *device)
 	 * We don't support them yet, so it's not a priority now.
 	 */
 
+	const bool is_a3050 = config->sensor_type == SINOWEALTH_SENSOR_A3050;
 	/* Number of DPIs = all DPIs from min to max (inclusive). */
-	const unsigned int num_dpis = (sinowealth_get_max_dpi_for_sensor(config->sensor_type) - SINOWEALTH_DPI_MIN) / SINOWEALTH_DPI_STEP + 1;
+	const unsigned int num_dpis = is_a3050
+		? ARRAY_LENGTH(SINOWEALTH_A3050_DPIS)
+		: (sinowealth_get_max_dpi_for_sensor(config->sensor_type) - SINOWEALTH_DPI_MIN) / SINOWEALTH_DPI_STEP + 1;
 
 	ratbag_device_init_profiles(device, drv_data->profile_count, SINOWEALTH_NUM_DPIS, drv_data->button_count, drv_data->led_count);
 
@@ -1845,7 +1879,9 @@ sinowealth_init_profile(struct ratbag_device *device)
 	/* Generate DPI list */
 	unsigned int dpis[num_dpis];
 	for (unsigned int i = 0; i < num_dpis; i++) {
-		dpis[i] = SINOWEALTH_DPI_MIN + i * SINOWEALTH_DPI_STEP;
+		dpis[i] = is_a3050
+			? SINOWEALTH_A3050_DPIS[i]
+			: SINOWEALTH_DPI_MIN + i * SINOWEALTH_DPI_STEP;
 	}
 
 	ratbag_device_for_each_profile(device, profile) {
@@ -1859,7 +1895,8 @@ sinowealth_init_profile(struct ratbag_device *device)
 
 		ratbag_profile_for_each_resolution(profile, resolution) {
 			ratbag_resolution_set_dpi_list(resolution, dpis, num_dpis);
-			ratbag_resolution_set_cap(resolution, RATBAG_RESOLUTION_CAP_SEPARATE_XY_RESOLUTION);
+			if (!is_a3050)
+				ratbag_resolution_set_cap(resolution, RATBAG_RESOLUTION_CAP_SEPARATE_XY_RESOLUTION);
 			ratbag_resolution_set_cap(resolution, RATBAG_RESOLUTION_CAP_DISABLE);
 		}
 
